@@ -1,0 +1,35 @@
+{
+  "name": "@bildit-platform/ai-pixel",
+  "version": "1.0.0",
+  "description": "Simple React component to render the BILDIT AI Pixel.",
+  "keywords": [
+    "react",
+    "pixel",
+    "tracking",
+    "bildit"
+  ],
+  "license": "MIT",
+  "author": "BILDIT Platform <support@bildit.co>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BILDIT/bildit-platform-ai-pixel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BILDIT/bildit-platform-ai-pixel/issues"
+  },
+  "homepage": "https://github.com/BILDIT/bildit-platform-ai-pixel#readme",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
