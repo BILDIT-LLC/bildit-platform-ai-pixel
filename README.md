@@ -16,13 +16,15 @@ pnpm add @bildit-platform/ai-pixel
 
 ## Usage
 
+Before adding the pixel, head to https://signup.bildit.co/aipixel and submit your site URL, site name, and contact email so we can provision the pixel.
+
 ```tsx
 import { BILDITAIPixel } from '@bildit-platform/ai-pixel';
 
 export function App() {
   return (
     <main>
-      <h1>Welcome to Bildit</h1>
+      <h1>Welcome to BILDIT!</h1>
       <BILDITAIPixel />
     </main>
   );
@@ -54,6 +56,33 @@ const BILDITAIPixel = dynamic(
 - `PIXEL_URL` – Exported constant with the raw pixel URL (`https://ai-pixel.bildit.co/pixel.gif`) for advanced use cases.
 
 The component accepts all `React.ImgHTMLAttributes<HTMLImageElement>`. The `alt` text defaults to `"BILDIT AI Pixel"`.
+
+## Bot trigger automation (experimental)
+
+An optional Playwright helper lives at `scripts/bot-trigger.js`. It opens several AI chat surfaces (ChatGPT, Perplexity, Claude, Gemini, Grok, Kimi, DeepSeek, …) and asks about `bildit.co`, while also pinging the BILDIT pixel. If API credentials are available, the script calls the corresponding HTTP APIs to exercise server-side pixel hits as well.
+
+1. Install Playwright if you have not already:
+   ```bash
+   npm install --save-dev playwright
+   npx playwright install chromium
+   ```
+2. Ensure you are running on Node.js 18+ so that `fetch` is globally available.
+3. Export any API keys you control, e.g.:
+   ```bash
+   export OPENAI_API_KEY=...
+   export PERPLEXITY_API_KEY=...
+   export ANTHROPIC_API_KEY=...
+   export GEMINI_API_KEY=...
+   export DEEPSEEK_API_KEY=...
+   export GROK_API_KEY=...
+   export MOONSHOT_API_KEY=...
+   ```
+4. Run the script:
+   ```bash
+   node scripts/bot-trigger.js
+   ```
+
+Many providers require an authenticated session before their chat UIs accept input. Sign in manually in the launched browser (set `HEADLESS=false` to observe execution) or provide persisted auth state before automation.
 
 ## Publishing (maintainers)
 
