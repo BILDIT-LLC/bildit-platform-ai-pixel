@@ -28,6 +28,15 @@ const HEADLESS = process.env.HEADLESS !== 'false';
 const WAIT_AFTER_NAV = parseInt(process.env.WAIT_AFTER_NAV || '4000', 10);
 const PROMPT_TEXT = process.env.BOT_PROMPT || 'What can you tell me about https://bildit.co and its AI pixel?';
 
+const PROMPT_URLS = Array.from(PROMPT_TEXT.matchAll(/https?:\/\/[^\s"'<>]+/g), match => match[0]);
+
+function escapeForRegex(value) {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+const PROMPT_ALLOW_PATTERNS = PROMPT_URLS.map(url => new RegExp(escapeForRegex(url), 'i'));
+const DEFAULT_LINK_DENY_PATTERNS = [/^javascript:/i, /^mailto:/i];
+
 function logStep(message, meta = {}) {
   const timestamp = new Date().toISOString();
   // eslint-disable-next-line no-console
@@ -105,41 +114,190 @@ async function sendPromptIfPossible(page, selector, prompt) {
   }
 }
 
+function compilePatternList(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map(pattern => {
+      if (pattern instanceof RegExp) return pattern;
+      if (typeof pattern === 'string') return new RegExp(pattern, 'i');
+      return null;
+    })
+    .filter(Boolean);
+}
+
+async function clickAssistantLink(context, page, target) {
+  if (!target.linkSelector) {
+    logStep('link-skip', { target: target.name, reason: 'missing-selector' });
+    return null;
+  }
+
+  const allowPatterns = compilePatternList(
+    target.linkAllowPatterns && target.linkAllowPatterns.length
+      ? target.linkAllowPatterns
+      : PROMPT_ALLOW_PATTERNS
+  );
+  const denyPatterns = compilePatternList([...(target.linkDenyPatterns || []), ...DEFAULT_LINK_DENY_PATTERNS]);
+  const timeoutMs = target.linkWaitTimeout ?? 45000;
+  const pollInterval = target.linkPollInterval ?? 1000;
+  const deadline = Date.now() + timeoutMs;
+
+  const baseline = new Set(
+    await page
+      .$$eval(target.linkSelector, nodes => nodes.map(node => node.href).filter(Boolean))
+      .catch(() => [])
+  );
+
+  while (Date.now() < deadline) {
+    const candidates = await page
+      .$$eval(target.linkSelector, nodes =>
+        nodes
+          .map(node => ({
+            href: node.href,
+            text: (node.textContent || '').trim(),
+          }))
+          .filter(item => Boolean(item.href))
+      )
+      .catch(() => []);
+
+    const nextLink = candidates.find(link => {
+      if (baseline.has(link.href)) return false;
+      const allowed = allowPatterns.length === 0 || allowPatterns.some(pattern => pattern.test(link.href));
+      if (!allowed) return false;
+      const denied = denyPatterns.some(pattern => pattern.test(link.href));
+      return !denied;
+    });
+
+    if (nextLink) {
+      const marked = await page
+        .evaluate(
+          ({ selector, href }) => {
+            const nodes = Array.from(document.querySelectorAll(selector));
+            const targetNode = nodes.find(node => node.href === href);
+            if (!targetNode) return false;
+            targetNode.setAttribute('data-bot-link-target', 'true');
+            targetNode.scrollIntoView({ block: 'center', behavior: 'instant' });
+            return true;
+          },
+          { selector: target.linkSelector, href: nextLink.href }
+        )
+        .catch(() => false);
+
+      if (!marked) {
+        baseline.add(nextLink.href);
+        await delay(pollInterval);
+        continue;
+      }
+
+      const waitForPopup = context
+        .waitForEvent('page', { timeout: target.linkPopupTimeout ?? 10000 })
+        .catch(() => null);
+
+      let clickError;
+      try {
+        await page.locator('[data-bot-link-target="true"]').first().click({ button: 'left', timeout: 5000 });
+      } catch (error) {
+        clickError = error;
+      }
+
+      const popup = await waitForPopup;
+
+      await page
+        .evaluate(() => {
+          for (const node of document.querySelectorAll('[data-bot-link-target="true"]')) {
+            node.removeAttribute('data-bot-link-target');
+          }
+        })
+        .catch(() => undefined);
+
+      if (clickError) {
+        logStep('link-click-error', { target: target.name, href: nextLink.href, error: clickError.message });
+        baseline.add(nextLink.href);
+        await delay(pollInterval);
+        continue;
+      }
+
+      const navigationPage = popup || page;
+      try {
+        await navigationPage.waitForLoadState('domcontentloaded', {
+          timeout: target.linkNavigationTimeout ?? 20000,
+        });
+      } catch (error) {
+        logStep('link-navigation-timeout', { target: target.name, href: nextLink.href, error: error.message });
+      }
+
+      logStep('link-clicked', {
+        target: target.name,
+        href: nextLink.href,
+        popup: Boolean(popup),
+      });
+
+      return navigationPage;
+    }
+
+    await delay(pollInterval);
+  }
+
+  logStep('link-click-skip', { target: target.name, reason: 'timeout' });
+  return null;
+}
+
 const WEB_TARGETS = [
   {
     name: 'ChatGPT',
+    slug: 'chatgpt',
     url: 'https://chat.openai.com/',
     selector: 'textarea[data-testid="textbox"]',
+    linkSelector: 'div[data-message-author-role="assistant"] a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/chat\.openai\.com/i],
+    linkWaitTimeout: 60000,
   },
   {
     name: 'Perplexity',
+    slug: 'perplexity',
     url: 'https://www.perplexity.ai/',
     selector: 'textarea[placeholder*="Ask anything"]',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/(?:www\.)?perplexity\.ai/i],
   },
   {
     name: 'Anthropic Claude',
+    slug: 'anthropic-claude',
     url: 'https://claude.ai/new',
     selector: 'textarea[placeholder*="Message Claude"]',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/claude\.ai/i],
   },
   {
     name: 'Google Gemini',
+    slug: 'google-gemini',
     url: 'https://gemini.google.com/app',
     selector: 'textarea[aria-label*="Enter a prompt"]',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/gemini\.google\.com/i, /^https?:\/\/(?:www\.)?google\.com/i],
   },
   {
     name: 'xAI Grok',
+    slug: 'xai-grok',
     url: 'https://grok.com/chat',
     selector: 'textarea',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/grok\.com/i, /^https?:\/\/x\.com/i],
   },
   {
     name: 'Kimi Moonshot',
+    slug: 'kimi-moonshot',
     url: 'https://kimi.moonshot.cn/',
     selector: 'textarea',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/kimi\.moonshot\.cn/i],
   },
   {
     name: 'DeepSeek',
+    slug: 'deepseek',
     url: 'https://chat.deepseek.com/',
     selector: 'textarea',
+    linkSelector: 'main a[href^="http"]',
+    linkDenyPatterns: [/^https?:\/\/chat\.deepseek\.com/i],
   },
 ];
 
@@ -312,8 +470,25 @@ async function driveBrowserTargets(browser) {
       await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(WAIT_AFTER_NAV);
       await sendPromptIfPossible(page, target.selector, PROMPT_TEXT);
-      await triggerPixelInPage(page, target.name.toLowerCase().replace(/\s+/g, '-'));
-      await page.waitForTimeout(2000);
+      const slug = target.slug || target.name.toLowerCase().replace(/\s+/g, '-');
+      await triggerPixelInPage(page, slug, { stage: 'post-prompt' });
+      const followPage = await clickAssistantLink(context, page, target);
+
+      if (followPage) {
+        const waitMs = target.postClickWait ?? 3000;
+        if (waitMs > 0) {
+          await followPage.waitForTimeout(waitMs).catch(() => undefined);
+        }
+        await triggerPixelInPage(followPage, slug, {
+          stage: followPage === page ? 'same-tab' : 'new-tab',
+        });
+        if (followPage !== page) {
+          await followPage.waitForTimeout(1500).catch(() => undefined);
+          await followPage.close().catch(() => undefined);
+        }
+      } else {
+        await page.waitForTimeout(2000);
+      }
     } catch (error) {
       logStep('navigate-error', { target: target.name, error: error.message });
     } finally {
