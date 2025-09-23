@@ -22,20 +22,84 @@
 
 const { chromium } = require('playwright');
 const { setTimeout: delay } = require('timers/promises');
+const readline = require('readline');
 
 const PIXEL_URL = process.env.PIXEL_URL || 'https://ai-pixel.bildit.co/pixel.gif';
 const HEADLESS = process.env.HEADLESS !== 'false';
-const WAIT_AFTER_NAV = parseInt(process.env.WAIT_AFTER_NAV || '4000', 10);
-const PROMPT_TEXT = process.env.BOT_PROMPT || 'What can you tell me about https://bildit.co and its AI pixel?';
+const WAIT_AFTER_NAV = parseInt(process.env.WAIT_AFTER_NAV || '8000', 10);
+const PROMPT_TEMPLATE = process.env.BOT_PROMPT || 'Can you scan {{website}} and send me all of the links on the page?';
+const DEFAULT_WEBSITE = process.env.BOT_WEBSITE || process.env.BOT_URL || 'https://bildit.co';
 
-const PROMPT_URLS = Array.from(PROMPT_TEXT.matchAll(/https?:\/\/[^\s"'<>]+/g), match => match[0]);
+let promptText = '';
+let promptUrls = [];
+let promptAllowPatterns = [];
 
 function escapeForRegex(value) {
   return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
-const PROMPT_ALLOW_PATTERNS = PROMPT_URLS.map(url => new RegExp(escapeForRegex(url), 'i'));
+function setPromptState(text) {
+  promptText = text;
+  promptUrls = Array.from(promptText.matchAll(/https?:\/\/[^\s"'<>]+/g), match => match[0]);
+  promptAllowPatterns = promptUrls.map(url => new RegExp(escapeForRegex(url), 'i'));
+}
+
 const DEFAULT_LINK_DENY_PATTERNS = [/^javascript:/i, /^mailto:/i];
+
+function hasWebsitePlaceholder(template) {
+  return /{{\s*website\s*}}/i.test(template);
+}
+
+function buildPromptFromWebsite(template, website) {
+  const trimmedTemplate = template || '';
+  const trimmedWebsite = website.trim();
+  if (!trimmedWebsite) return trimmedTemplate || 'What can you tell me about bildit.co and its AI pixel?';
+  if (hasWebsitePlaceholder(trimmedTemplate)) {
+    return trimmedTemplate.replace(/{{\s*website\s*}}/gi, trimmedWebsite);
+  }
+  if (trimmedTemplate.includes(trimmedWebsite)) {
+    return trimmedTemplate;
+  }
+  return `${trimmedTemplate} ${trimmedWebsite}`.trim();
+}
+
+function askQuestion(question) {
+  return new Promise(resolve => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, answer => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+function normalizeWebsite(value) {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed.replace(/^\/+/, '')}`;
+}
+
+async function resolveWebsiteTarget() {
+  const envWebsite = process.env.BOT_WEBSITE || process.env.BOT_URL;
+  if (envWebsite) {
+    const website = normalizeWebsite(envWebsite);
+    logStep('website-selected', { mode: 'env', website });
+    return website || DEFAULT_WEBSITE;
+  }
+
+  if (!process.stdin.isTTY) {
+    const website = normalizeWebsite(DEFAULT_WEBSITE) || DEFAULT_WEBSITE;
+    logStep('website-selected', { mode: 'default-noninteractive', website });
+    return website;
+  }
+
+  const answer = await askQuestion(`Website to ask about [${DEFAULT_WEBSITE}]: `);
+  const website = normalizeWebsite((answer && answer.trim()) || DEFAULT_WEBSITE) || DEFAULT_WEBSITE;
+  logStep('website-selected', { mode: 'interactive', website });
+  return website;
+}
 
 function logStep(message, meta = {}) {
   const timestamp = new Date().toISOString();
@@ -100,14 +164,109 @@ async function triggerPixelInPage(page, source, extra = {}) {
 }
 
 async function sendPromptIfPossible(page, selector, prompt) {
+  const locator = page.locator(selector).first();
   try {
-    await page.waitForSelector(selector, { timeout: 5000 });
-    const element = await page.$(selector);
-    if (!element) throw new Error('Selector resolved to null');
-    await element.click({ delay: 50 });
-    await element.fill('');
-    await element.type(prompt, { delay: 25 });
-    await element.press('Enter');
+    await locator.waitFor({ state: 'attached', timeout: 8000 });
+    
+    // Check if element is visible
+    const isVisible = await locator.isVisible().catch(() => false);
+    const isEnabled = await locator.isEnabled().catch(() => false);
+    
+    logStep('element-found', { 
+      selector, 
+      visible: isVisible, 
+      enabled: isEnabled 
+    });
+    
+    await locator.evaluate(element => {
+      element.scrollIntoView({ block: 'center', behavior: 'instant' });
+    }).catch(() => undefined);
+
+    // Click to focus the element first
+    await locator.click({ timeout: 5000, force: true }).catch(() => undefined);
+    
+    // Wait a bit for the element to be ready
+    await page.waitForTimeout(500);
+
+    let filled = false;
+    try {
+      // Try the standard fill method first
+      await locator.fill('', { timeout: 3000, force: true });
+      await locator.type(prompt, { delay: 15 });
+      filled = true;
+    } catch (fillError) {
+      // Fallback to direct evaluation for contenteditable elements
+      const fallbackSuccess = await locator
+        .evaluate((element, value) => {
+          // Clear existing content
+          element.textContent = '';
+          
+          // For contenteditable elements, use innerHTML or textContent
+          if (element.isContentEditable || element.getAttribute('contenteditable') === 'true') {
+            element.textContent = value;
+            
+            // Dispatch input events to trigger any listeners
+            const inputEvent = new InputEvent('input', { 
+              bubbles: true, 
+              cancelable: true,
+              inputType: 'insertText',
+              data: value
+            });
+            element.dispatchEvent(inputEvent);
+            
+            const changeEvent = new Event('change', { bubbles: true });
+            element.dispatchEvent(changeEvent);
+            
+            // Trigger any additional events that might be needed
+            element.dispatchEvent(new Event('keyup', { bubbles: true }));
+            element.dispatchEvent(new Event('blur', { bubbles: true }));
+            
+            element.setAttribute('data-bot-filled', 'true');
+            return true;
+          }
+          
+          // For regular input/textarea elements
+          if ('value' in element) {
+            element.value = value;
+            const inputEvent = new Event('input', { bubbles: true });
+            element.dispatchEvent(inputEvent);
+            const changeEvent = new Event('change', { bubbles: true });
+            element.dispatchEvent(changeEvent);
+            element.setAttribute('data-bot-filled', 'true');
+            return true;
+          }
+          
+          return false;
+        }, prompt)
+        .catch(() => false);
+
+      if (!fallbackSuccess) {
+        throw fillError;
+      }
+
+      await locator.evaluate(element => {
+        if (element.hasAttribute('data-bot-filled')) {
+          element.removeAttribute('data-bot-filled');
+        }
+      }).catch(() => undefined);
+
+      filled = true;
+      logStep('prompt-filled-eval', { selector, fallback: true });
+    }
+
+    if (!filled) {
+      throw new Error('Prompt field fill failed');
+    }
+
+    // Wait a moment before sending
+    await page.waitForTimeout(200);
+
+    try {
+      await locator.press('Enter', { timeout: 2000 });
+    } catch (error) {
+      await page.keyboard.press('Enter');
+    }
+
     logStep('prompt-sent', { selector });
   } catch (error) {
     logStep('prompt-skip', { selector, error: error.message });
@@ -134,7 +293,7 @@ async function clickAssistantLink(context, page, target) {
   const allowPatterns = compilePatternList(
     target.linkAllowPatterns && target.linkAllowPatterns.length
       ? target.linkAllowPatterns
-      : PROMPT_ALLOW_PATTERNS
+      : promptAllowPatterns
   );
   const denyPatterns = compilePatternList([...(target.linkDenyPatterns || []), ...DEFAULT_LINK_DENY_PATTERNS]);
   const timeoutMs = target.linkWaitTimeout ?? 45000;
@@ -246,7 +405,7 @@ const WEB_TARGETS = [
     name: 'ChatGPT',
     slug: 'chatgpt',
     url: 'https://chat.openai.com/',
-    selector: 'textarea[data-testid="textbox"]',
+    selector: '[contenteditable="true"]',
     linkSelector: 'div[data-message-author-role="assistant"] a[href^="http"]',
     linkDenyPatterns: [/^https?:\/\/chat\.openai\.com/i],
     linkWaitTimeout: 60000,
@@ -255,7 +414,7 @@ const WEB_TARGETS = [
     name: 'Perplexity',
     slug: 'perplexity',
     url: 'https://www.perplexity.ai/',
-    selector: 'textarea[placeholder*="Ask anything"]',
+    selector: 'div[role="textbox"]',
     linkSelector: 'main a[href^="http"]',
     linkDenyPatterns: [/^https?:\/\/(?:www\.)?perplexity\.ai/i],
   },
@@ -263,7 +422,7 @@ const WEB_TARGETS = [
     name: 'Anthropic Claude',
     slug: 'anthropic-claude',
     url: 'https://claude.ai/new',
-    selector: 'textarea[placeholder*="Message Claude"]',
+    selector: 'div[role="textbox"], [contenteditable="true"]',
     linkSelector: 'main a[href^="http"]',
     linkDenyPatterns: [/^https?:\/\/claude\.ai/i],
   },
@@ -271,7 +430,7 @@ const WEB_TARGETS = [
     name: 'Google Gemini',
     slug: 'google-gemini',
     url: 'https://gemini.google.com/app',
-    selector: 'textarea[aria-label*="Enter a prompt"]',
+    selector: 'div[role="textbox"][aria-label*="Enter a prompt"]',
     linkSelector: 'main a[href^="http"]',
     linkDenyPatterns: [/^https?:\/\/gemini\.google\.com/i, /^https?:\/\/(?:www\.)?google\.com/i],
   },
@@ -316,7 +475,7 @@ const API_TASKS = [
           model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
           messages: [
             { role: 'system', content: 'You are researching websites.' },
-            { role: 'user', content: PROMPT_TEXT },
+            { role: 'user', content: promptText },
           ],
         }),
       });
@@ -338,7 +497,7 @@ const API_TASKS = [
           model: process.env.PERPLEXITY_MODEL || 'llama-3.1-sonar-small-128k-online',
           messages: [
             { role: 'system', content: 'You are a web researcher.' },
-            { role: 'user', content: PROMPT_TEXT },
+            { role: 'user', content: promptText },
           ],
         }),
       });
@@ -361,7 +520,7 @@ const API_TASKS = [
           model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620',
           max_tokens: 512,
           messages: [
-            { role: 'user', content: PROMPT_TEXT },
+            { role: 'user', content: promptText },
           ],
         }),
       });
@@ -383,7 +542,7 @@ const API_TASKS = [
           body: JSON.stringify({
             contents: [
               {
-                parts: [{ text: PROMPT_TEXT }],
+                parts: [{ text: promptText }],
               },
             ],
           }),
@@ -406,7 +565,7 @@ const API_TASKS = [
         body: JSON.stringify({
           model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
           messages: [
-            { role: 'user', content: PROMPT_TEXT },
+            { role: 'user', content: promptText },
           ],
         }),
       });
@@ -427,7 +586,7 @@ const API_TASKS = [
         body: JSON.stringify({
           model: process.env.GROK_MODEL || 'grok-beta',
           messages: [
-            { role: 'user', content: PROMPT_TEXT },
+            { role: 'user', content: promptText },
           ],
         }),
       });
@@ -447,7 +606,7 @@ const API_TASKS = [
         },
         body: JSON.stringify({
           model: process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
-          input: PROMPT_TEXT,
+          input: promptText,
         }),
       });
       logStep('api-call', { provider: 'moonshot', status: response.status });
@@ -469,7 +628,7 @@ async function driveBrowserTargets(browser) {
     try {
       await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(WAIT_AFTER_NAV);
-      await sendPromptIfPossible(page, target.selector, PROMPT_TEXT);
+      await sendPromptIfPossible(page, target.selector, promptText);
       const slug = target.slug || target.name.toLowerCase().replace(/\s+/g, '-');
       await triggerPixelInPage(page, slug, { stage: 'post-prompt' });
       const followPage = await clickAssistantLink(context, page, target);
@@ -517,6 +676,11 @@ async function runApiTasks() {
 
 async function main() {
   logStep('script-start', { headless: HEADLESS, pixelUrl: PIXEL_URL });
+
+  const website = await resolveWebsiteTarget();
+  const resolvedPrompt = buildPromptFromWebsite(PROMPT_TEMPLATE, website);
+  setPromptState(resolvedPrompt);
+  logStep('prompt-prepared', { website, prompt: resolvedPrompt });
 
   let browser;
   try {
