@@ -176,6 +176,7 @@ async function trackAIBotRequestForPixel(request, options = {}) {
     referer: refererOverride,
     headers: headersOverride,
     fetchOptions,
+    debug = false,
   } = options;
 
   let headersLike = headersOverride;
@@ -187,7 +188,23 @@ async function trackAIBotRequestForPixel(request, options = {}) {
   const referer = refererOverride || toHeaderValue(headersLike, 'referer') || toHeaderValue(headersLike, 'referrer');
 
   const botSignature = identifyAIBot(userAgent);
+  
+  // Enhanced logging for debugging
+  if (debug || process.env.BILDIT_DEBUG === 'true') {
+    console.log('[BILDIT Middleware] Bot detection:', {
+      userAgent: userAgent ? userAgent.substring(0, 100) + '...' : 'none',
+      referer: referer || 'none',
+      botSignature: botSignature ? botSignature.slug : 'none',
+      force,
+      requireBotMatch,
+      pixelUrl
+    });
+  }
+
   if (!force && requireBotMatch && !botSignature) {
+    if (debug || process.env.BILDIT_DEBUG === 'true') {
+      console.log('[BILDIT Middleware] Skipping pixel request - no bot detected');
+    }
     return {
       triggered: false,
       skipped: true,
@@ -244,6 +261,16 @@ async function trackAIBotRequestForPixel(request, options = {}) {
     if (userAgent) headerBag['User-Agent'] = userAgent;
     headerBag['X-BILDIT-Source'] = headerBag['X-BILDIT-Source'] || 'nextjs-server';
 
+    // Enhanced logging for fetch request
+    if (debug || process.env.BILDIT_DEBUG === 'true') {
+      console.log('[BILDIT Middleware] Making pixel request:', {
+        url: url.toString(),
+        headers: headerBag,
+        bot: botSignature ? botSignature.slug : undefined,
+        params: normalizedParams
+      });
+    }
+
     const response = await fetch(url.toString(), {
       method: restFetchOptions.method || 'GET',
       redirect:
@@ -251,6 +278,16 @@ async function trackAIBotRequestForPixel(request, options = {}) {
       ...restFetchOptions,
       headers: headerBag,
     });
+
+    // Log successful response
+    if (debug || process.env.BILDIT_DEBUG === 'true') {
+      console.log('[BILDIT Middleware] Pixel request successful:', {
+        status: response.status,
+        ok: response.ok,
+        url: url.toString(),
+        bot: botSignature ? botSignature.slug : undefined
+      });
+    }
 
     return {
       triggered: true,
@@ -262,6 +299,16 @@ async function trackAIBotRequestForPixel(request, options = {}) {
       bot: botSignature ? botSignature.slug : undefined,
     };
   } catch (error) {
+    // Enhanced error logging
+    if (debug || process.env.BILDIT_DEBUG === 'true') {
+      console.error('[BILDIT Middleware] Pixel request failed:', {
+        error: error instanceof Error ? error.message : String(error),
+        url: url.toString(),
+        bot: botSignature ? botSignature.slug : undefined,
+        userAgent: userAgent ? userAgent.substring(0, 100) + '...' : 'none'
+      });
+    }
+    
     return {
       triggered: false,
       error: error instanceof Error ? error.message : String(error),
