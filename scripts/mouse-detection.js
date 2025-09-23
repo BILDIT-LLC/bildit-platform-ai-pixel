@@ -56,6 +56,12 @@
 
     try {
       const url = new URL(PIXEL_URL);
+      // Ensure site param defaults to current origin
+      try {
+        if (!('site' in extra) && typeof location !== 'undefined' && location.origin) {
+          url.searchParams.set('site', location.origin);
+        }
+      } catch (_) {}
       url.searchParams.set('source', source);
       url.searchParams.set('mode', 'mouse-movement');
       url.searchParams.set('ts', now.toString());

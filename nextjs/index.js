@@ -92,6 +92,15 @@ function buildPixelUrlWithParams(pixelUrl, params) {
   for (const [key, value] of Object.entries(params)) {
     ensureSearchParam(url, key, value);
   }
+  // Ensure site param: prefer explicit param, then referer origin, then host
+  if (!url.searchParams.has('site')) {
+    try {
+      if (typeof params.referer === 'string' && params.referer) {
+        const ref = new URL(params.referer);
+        ensureSearchParam(url, 'site', ref.origin);
+      }
+    } catch (_) {}
+  }
   return url;
 }
 

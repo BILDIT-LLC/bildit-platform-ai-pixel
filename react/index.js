@@ -70,6 +70,13 @@ function buildPixelInlineScript(pixelUrl, baseParams, altText) {
       var pixelUrl = cfg.pixelUrl;
       var UA = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : 'unknown';
 
+      // Ensure site param defaults to current origin when available
+      try {
+        if (typeof location !== 'undefined' && location.origin && baseParams && baseParams.site == null) {
+          baseParams.site = location.origin;
+        }
+      } catch (_) {}
+
       function mergeParams(extra) {
         var params = new URLSearchParams();
         for (var key in baseParams) {
@@ -177,6 +184,13 @@ function buildMouseDetectionInlineScript(pixelUrl, options = {}) {
       var THROTTLE = Number(opts.throttle) || 1000;
       var MAX = Number(opts.maxMovements) || 10;
       var baseParams = opts.params || {};
+
+      // Ensure site param defaults to current origin when available
+      try {
+        if (typeof location !== 'undefined' && location.origin && baseParams && baseParams.site == null) {
+          baseParams.site = location.origin;
+        }
+      } catch (_) {}
 
       var isRecording = false;
       var startTime = 0;
