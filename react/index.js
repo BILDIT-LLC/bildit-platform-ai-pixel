@@ -154,6 +154,112 @@ function buildPixelInlineScript(pixelUrl, baseParams, altText) {
   return scriptBody;
 }
 
+function buildMouseDetectionInlineScript(pixelUrl, options = {}) {
+  const payload = {
+    pixelUrl,
+    options: {
+      duration: options.duration || 5000,
+      throttle: options.throttle || 1000,
+      maxMovements: options.maxMovements || 10,
+      params: options.params || {},
+    },
+  };
+
+  const serializedPayload = JSON.stringify(payload).replace(/<\/?script/gi, match => match.replace(/</g, '<\\/'));
+
+  const scriptBody = `(function(){
+    'use strict';
+    try {
+      var cfg = ${serializedPayload};
+      var pixelUrl = cfg.pixelUrl || '${PIXEL_URL}';
+      var opts = cfg.options || {};
+      var DURATION = Number(opts.duration) || 5000;
+      var THROTTLE = Number(opts.throttle) || 1000;
+      var MAX = Number(opts.maxMovements) || 10;
+      var baseParams = opts.params || {};
+
+      var isRecording = false;
+      var startTime = 0;
+      var lastPing = 0;
+      var count = 0;
+      var movements = [];
+
+      function qs(extra){
+        var sp = new URLSearchParams();
+        for (var k in baseParams){ if (Object.prototype.hasOwnProperty.call(baseParams,k) && baseParams[k]!=null) sp.set(k, String(baseParams[k])); }
+        if (extra){ for (var ek in extra){ if (Object.prototype.hasOwnProperty.call(extra,ek) && extra[ek]!=null) sp.set(ek, String(extra[ek])); } }
+        if (!sp.has('ts')) sp.set('ts', Date.now().toString());
+        if (!sp.has('nonce')) sp.set('nonce', Math.random().toString(36).slice(2));
+        sp.set('mode','mouse');
+        return sp.toString();
+      }
+
+      function send(extra){
+        var now = Date.now();
+        if (now - lastPing < THROTTLE) return;
+        lastPing = now;
+        var img = new Image(1,1);
+        img.decoding = 'async';
+        img.loading = 'lazy';
+        img.referrerPolicy = 'no-referrer-when-downgrade';
+        img.src = pixelUrl + (pixelUrl.indexOf('?')===-1?'?':'&') + qs(extra);
+      }
+
+      function start(){
+        if (isRecording) return;
+        isRecording = true;
+        startTime = Date.now();
+        count = 0;
+        movements = [];
+        send({ event:'mouse-start' });
+        setTimeout(stop, DURATION);
+      }
+
+      function stop(){
+        if (!isRecording) return;
+        isRecording = false;
+        var dur = Date.now() - startTime;
+        var summary = movements.slice(0,5);
+        try { summary = JSON.stringify(summary); } catch(e){ summary = '[]'; }
+        send({ event:'mouse-end', dur: String(dur), moves: String(movements.length), data: summary });
+      }
+
+      function onMove(e){
+        if (!isRecording) start();
+        count++;
+        if (movements.length < MAX){
+          movements.push({ x:e.clientX, y:e.clientY, t: Date.now()-startTime });
+        }
+        if (count % 5 === 0){
+          send({ event:'mouse-update', c:String(count), t:String(Date.now()-startTime), x:String(e.clientX), y:String(e.clientY) });
+        }
+      }
+
+      function onClick(e){
+        if (!isRecording) start();
+        send({ event:'mouse-click', x:String(e.clientX), y:String(e.clientY), b:String(e.button) });
+      }
+
+      function onScroll(){
+        if (!isRecording) start();
+        send({ event:'scroll', sx:String(window.scrollX||0), sy:String(window.scrollY||0) });
+      }
+
+      document.addEventListener('mousemove', onMove, { passive:true });
+      document.addEventListener('click', onClick, { passive:true });
+      window.addEventListener('scroll', onScroll, { passive:true });
+
+      // Initial beacon for environment
+      send({ event:'mouse-init', vw:String(window.innerWidth||0), vh:String(window.innerHeight||0) });
+
+      // Expose controls
+      try { window.BILDIT_MOUSE_DETECTION = { start:start, stop:stop }; } catch(_){}
+    } catch (err) { try { console.error('BILDIT mouse script error', err); } catch(_){} }
+  })();`;
+
+  return scriptBody;
+}
+
 function escapeAttribute(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -315,12 +421,26 @@ const BILDITAIPixel = React.forwardRef(function BILDITAIPixel(componentProps = {
   return React.createElement(React.Fragment, null, elements);
 });
 
+function BILDITMouseDetectionScript(props = {}) {
+  const { pixelUrl = PIXEL_URL, options, scriptId, scriptNonce, ...rest } = props;
+  const content = React.useMemo(() => buildMouseDetectionInlineScript(pixelUrl, options || {}), [pixelUrl, JSON.stringify(options||{})]);
+  return React.createElement('script', {
+    id: scriptId,
+    nonce: scriptNonce,
+    suppressHydrationWarning: true,
+    dangerouslySetInnerHTML: { __html: content },
+    ...rest,
+  });
+}
+
 module.exports = {
   BILDITAIPixel,
   PIXEL_URL,
   DEFAULT_ALT,
   buildPixelInlineScript,
+  buildMouseDetectionInlineScript,
   normalizePixelParams,
   SURFACE_KEYS,
+  BILDITMouseDetectionScript,
 };
 module.exports.default = BILDITAIPixel;

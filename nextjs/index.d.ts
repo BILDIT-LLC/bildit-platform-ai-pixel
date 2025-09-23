@@ -7,10 +7,20 @@ import {
   PIXEL_URL,
   DEFAULT_ALT,
   buildPixelInlineScript,
+  buildMouseDetectionInlineScript,
   normalizePixelParams,
+  BILDITMouseDetectionScript,
 } from '../react';
 
-export { BILDITAIPixel, PIXEL_URL, DEFAULT_ALT, buildPixelInlineScript, normalizePixelParams };
+export {
+  BILDITAIPixel,
+  PIXEL_URL,
+  DEFAULT_ALT,
+  buildPixelInlineScript,
+  buildMouseDetectionInlineScript,
+  normalizePixelParams,
+  BILDITMouseDetectionScript,
+};
 
 export type HeadersLike =
   | { get(name: string): string | null | undefined }

@@ -26,6 +26,18 @@ export declare function buildPixelInlineScript(
   altText?: string
 ): string;
 
+export interface MouseDetectionOptions {
+  duration?: number;
+  throttle?: number;
+  maxMovements?: number;
+  params?: Record<string, string | number | boolean | null | undefined>;
+}
+
+export declare function buildMouseDetectionInlineScript(
+  pixelUrl: string,
+  options?: MouseDetectionOptions
+): string;
+
 export declare function normalizePixelParams(
   params?: Record<string, string | number | boolean | null | undefined>
 ): Record<string, string>;
@@ -33,5 +45,15 @@ export declare function normalizePixelParams(
 export declare const BILDITAIPixel: React.ForwardRefExoticComponent<
   BILDITAIPixelProps & React.RefAttributes<HTMLImageElement>
 >;
+
+export interface BILDITMouseDetectionScriptProps
+  extends Omit<React.ScriptHTMLAttributes<HTMLScriptElement>, 'dangerouslySetInnerHTML' | 'id' | 'nonce'> {
+  pixelUrl?: string;
+  options?: MouseDetectionOptions;
+  scriptId?: string;
+  scriptNonce?: string;
+}
+
+export declare const BILDITMouseDetectionScript: React.FC<BILDITMouseDetectionScriptProps>;
 
 export default BILDITAIPixel;
