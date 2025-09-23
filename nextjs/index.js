@@ -232,6 +232,40 @@ async function trackAIBotRequestForPixel(request, options = {}) {
   if (referer && !normalizedParams.referer) normalizedParams.referer = referer;
   if (botSignature && !normalizedParams.bot) normalizedParams.bot = botSignature.slug;
 
+  // Ensure site param when referer is missing by deriving origin from request
+  if (!normalizedParams.site) {
+    try {
+      // 1) Prefer origin of referer if present
+      if (referer) {
+        const ref = new URL(referer);
+        normalizedParams.site = ref.origin;
+      } else {
+        // 2) Use the request URL origin if available (Edge/Next middleware has request.url)
+        let originCandidate;
+        try {
+          if (request && typeof request.url === 'string') {
+            originCandidate = new URL(request.url).origin;
+          }
+        } catch (_) {}
+
+        // 3) Fall back to forwarded headers (common in proxies)
+        if (!originCandidate) {
+          const xfProto = toHeaderValue(headersLike, 'x-forwarded-proto') || 'https';
+          const xfHost = toHeaderValue(headersLike, 'x-forwarded-host');
+          if (xfHost) originCandidate = `${xfProto}://${xfHost}`;
+        }
+
+        // 4) As a last resort, use Host header
+        if (!originCandidate) {
+          const host = toHeaderValue(headersLike, 'host');
+          if (host) originCandidate = `https://${host}`;
+        }
+
+        if (originCandidate) normalizedParams.site = originCandidate;
+      }
+    } catch (_) {}
+  }
+
   const url = buildPixelUrlWithParams(pixelUrl, normalizedParams);
 
   if (typeof fetch !== 'function') {
